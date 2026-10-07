@@ -1,0 +1,4 @@
+build*/
+.DS_Store
+*.palette.bak
+compile_commands.json
