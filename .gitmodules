@@ -1,0 +1,3 @@
+[submodule "external/ShaderClaw3"]
+	path = external/ShaderClaw3
+	url = https://github.com/G3993/ShaderClaw3.git
