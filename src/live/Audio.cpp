@@ -21,13 +21,39 @@ std::vector<std::string> Audio::devices() {
     if (ma_context_init(nullptr, 0, nullptr, &ctx) != MA_SUCCESS) return out;
     ma_device_info* caps = nullptr; ma_uint32 n = 0;
     if (ma_context_get_devices(&ctx, nullptr, nullptr, &caps, &n) == MA_SUCCESS)
-        for (ma_uint32 i = 0; i < n; ++i) out.emplace_back(caps[i].name);
+        for (ma_uint32 i = 0; i < n; ++i) out.emplace_back(std::string(caps[i].isDefault ? "*" : "") + caps[i].name);
     ma_context_uninit(&ctx);
     return out;
 }
 
-bool Audio::start(int deviceIndex) {
+bool Audio::start(Source src, int deviceIndex) {
     stop();
+    m_source = src;
+    if (src == Source::System) {
+        if (m_tap.start([this](const float* f, unsigned n, unsigned ch) { onCapture(f, n, ch); })) {
+            m_sourceName = "this computer"; startSynthetic(); m_sampleRate = (float)m_tap.sampleRate(); return true;
+        }
+        m_error = m_tap.error();
+#ifdef _WIN32
+        // WASAPI loopback: what the default output device plays.
+        {
+            auto* ctx = new ma_context();
+            if (ma_context_init(nullptr, 0, nullptr, ctx) == MA_SUCCESS) {
+                ma_device_config cfg = ma_device_config_init(ma_device_type_loopback);
+                cfg.capture.format = ma_format_f32; cfg.capture.channels = 2; cfg.sampleRate = 48000;
+                cfg.dataCallback = maCallback; cfg.pUserData = this;
+                auto* dev = new ma_device();
+                if (ma_device_init(ctx, &cfg, dev) == MA_SUCCESS && ma_device_start(dev) == MA_SUCCESS) {
+                    m_device = dev; m_context = ctx; m_sourceName = "this computer"; startSynthetic(); return true;
+                }
+                delete dev; ma_context_uninit(ctx);
+            }
+            delete ctx;
+        }
+#endif
+        // fall through to the microphone, keeping the tap's error for the UI
+    }
+    std::string tapErr = m_error;
     auto* ctx = new ma_context();
     if (ma_context_init(nullptr, 0, nullptr, ctx) != MA_SUCCESS) { m_error = "audio context failed"; delete ctx; return false; }
     ma_device_config cfg = ma_device_config_init(ma_device_type_capture);
@@ -36,23 +62,35 @@ bool Audio::start(int deviceIndex) {
     cfg.sampleRate = 48000;
     cfg.dataCallback = maCallback;
     cfg.pUserData = this;
+    std::string devName = "the microphone";
     if (deviceIndex >= 0) {
         ma_device_info* caps = nullptr; ma_uint32 n = 0;
-        if (ma_context_get_devices(ctx, nullptr, nullptr, &caps, &n) == MA_SUCCESS && (ma_uint32)deviceIndex < n)
-            cfg.capture.pDeviceID = &caps[deviceIndex].id;
+        if (ma_context_get_devices(ctx, nullptr, nullptr, &caps, &n) == MA_SUCCESS && (ma_uint32)deviceIndex < n) { cfg.capture.pDeviceID = &caps[deviceIndex].id; devName = caps[deviceIndex].name; }
+    } else {
+        ma_device_info* caps = nullptr; ma_uint32 n = 0;
+        if (ma_context_get_devices(ctx, nullptr, nullptr, &caps, &n) == MA_SUCCESS)
+            for (ma_uint32 i = 0; i < n; ++i) if (caps[i].isDefault) devName = caps[i].name;
     }
     auto* dev = new ma_device();
     if (ma_device_init(ctx, &cfg, dev) != MA_SUCCESS) { m_error = "no input device"; delete dev; ma_context_uninit(ctx); delete ctx; return false; }
     if (ma_device_start(dev) != MA_SUCCESS) { m_error = "input device would not start"; ma_device_uninit(dev); delete dev; ma_context_uninit(ctx); delete ctx; return false; }
     m_device = dev; m_context = ctx;
+    m_source = Source::Microphone; m_sourceName = devName;
+    startSynthetic();
+    if (src == Source::System) m_error = tapErr;   // running on the mic, but say why the tap failed
+    return true;
+}
+
+bool Audio::startSynthetic() {
     m_ring.assign(kFFT * 4, 0.0f); m_ringPos = 0;
     m_window.resize(kFFT); for (int i = 0; i < kFFT; ++i) m_window[i] = 0.5f * (1.0f - std::cos(6.2831853f * i / (kFFT - 1)));
     m_re.assign(kFFT, 0); m_im.assign(kFFT, 0); m_spectrum.assign(kFFT / 2, 0); m_prevSpec.assign(kFFT / 2, 0);
-    m_running = true; m_error.clear();
+    m_running = true; m_error.clear(); m_sampleRate = 48000.0f;
     return true;
 }
 
 void Audio::stop() {
+    m_tap.stop();
     if (m_device) { ma_device_uninit((ma_device*)m_device); delete (ma_device*)m_device; m_device = nullptr; }
     if (m_context) { ma_context_uninit((ma_context*)m_context); delete (ma_context*)m_context; m_context = nullptr; }
     m_running = false;
@@ -60,11 +98,14 @@ void Audio::stop() {
 
 void Audio::onCapture(const float* frames, unsigned count, unsigned channels) {
     std::lock_guard<std::mutex> lk(m_mx);
+    float pk = 0;
     for (unsigned i = 0; i < count; ++i) {
         float s = 0; for (unsigned c = 0; c < channels; ++c) s += frames[i * channels + c];
         s /= (float)channels;
+        pk = std::max(pk, std::fabs(s));
         m_ring[m_ringPos] = s; m_ringPos = (m_ringPos + 1) % m_ring.size();
     }
+    m_peak = pk;
 }
 
 // In-place iterative radix-2 FFT.
@@ -104,7 +145,7 @@ void Audio::analyze() {
     float rms = 0; for (int i = 0; i < kFFT; ++i) rms += m_re[i] * m_re[i];
     rms = std::sqrt(rms / kFFT) * 2.0f;
     fft(m_re, m_im);
-    const float binHz = 48000.0f / kFFT;
+    const float binHz = m_sampleRate / kFFT;
     float bass = 0, mid = 0, high = 0, flux = 0;
     for (int i = 1; i < kFFT / 2; ++i) {
         float m = std::sqrt(m_re[i] * m_re[i] + m_im[i] * m_im[i]) / (kFFT / 4);
@@ -113,20 +154,25 @@ void Audio::analyze() {
         if (f >= 40 && f < 250) bass += m;
         else if (f >= 250 && f < 2000) mid += m;
         else if (f >= 2000 && f < 9000) high += m;
-        float d = m - m_prevSpec[i]; if (d > 0 && f < 300) flux += d;
+        float d = (m - m_prevSpec[i]) * m_agc; if (d > 0 && f >= 40 && f < 160) flux += d;
         m_prevSpec[i] = m;
     }
-    // Simple AGC so quiet rooms still move. Tracks the slow peak of the level.
+    // AGC: normalise to the recent peak so a quiet source still fills 0..1.
+    // The envelope jumps up with the signal and sinks back over ~20 s.
+    m_peakEnv = std::max(rms, m_peakEnv * 0.9994f);
+    m_agc = std::clamp(0.8f / std::max(m_peakEnv, 0.004f), 1.0f, 60.0f);
     float raw = rms * m_agc;
-    if (raw > 1.0f) m_agc *= 0.98f; else if (raw < 0.35f && rms > 0.002f) m_agc *= 1.002f;
-    m_agc = std::clamp(m_agc, 1.0f, 40.0f);
+    for (int i = 0; i < 128; ++i) {   // 0..12 kHz in 128 steps for audioSpectrum()
+        float m = std::max(m_spectrum[i * 2 + 1], m_spectrum[i * 2 + 2]) * 4.0f * m_agc;
+        m_spec128[i] = (unsigned char)std::clamp(m * 255.0f, 0.0f, 255.0f);
+    }
     m_rawLevel = std::clamp(raw, 0.0f, 1.0f);
     m_rawBass = std::clamp(bass * 0.9f * m_agc, 0.0f, 1.0f);
     m_rawMid = std::clamp(mid * 0.5f * m_agc, 0.0f, 1.0f);
     m_rawHigh = std::clamp(high * 0.9f * m_agc, 0.0f, 1.0f);
     // onset / beat from bass spectral flux with adaptive threshold
     m_fluxAvg = m_fluxAvg * 0.95f + flux * 0.05f;
-    if (flux > m_fluxAvg * 1.8f + 0.01f && m_sinceBeat > 0.25f) {
+    if (flux > m_fluxAvg * 2.2f + 0.004f && m_sinceBeat > 0.3f) {
         if (m_sinceBeat < 2.0f) { float b = 60.0f / m_sinceBeat; m_bpm = m_bpm * 0.8f + std::clamp(b, 60.0f, 180.0f) * 0.2f; }
         m_sinceBeat = 0; m_beat = 1.0f;
     }

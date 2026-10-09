@@ -426,7 +426,13 @@ void App::sheetLive() {
         int nsh = segmented("##shape", {"Follow", "Ease", "Pulse", "Gate"}, shape);
         if (nsh != shape) setAudioBind(liveParam, b.signal, r, sm, nsh);
         ImGui::Dummy(ImVec2(0, 6));
-        caption(audio.running() ? "Listening to the microphone." : audio.error().c_str(), kW40);
+        // input: what Palette listens to
+        int isrc = audio.source() == live::Audio::Source::System ? 0 : 1;
+        int nis = chips("##input", {"This computer", "Microphone"}, isrc);
+        if (nis >= 0 && nis != isrc) setAudioSource(nis == 0 ? live::Audio::Source::System : live::Audio::Source::Microphone);
+        std::string cap = audio.running() ? "Listening to " + audio.sourceName() + "." : "Not listening.";
+        if (!audio.error().empty()) cap += " " + audio.error();
+        caption(cap.c_str(), kW40);
     } else if (src == 1) {
         MotionBinding& m = motion[liveParam];
         static const live::Lfo::Shape shapes[] = {live::Lfo::Shape::Sine, live::Lfo::Shape::Triangle, live::Lfo::Shape::Saw, live::Lfo::Shape::Square, live::Lfo::Shape::Drift};

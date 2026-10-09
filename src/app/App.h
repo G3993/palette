@@ -94,6 +94,7 @@ public:
     void openSheet(Sheet s);
     void closeSheet();
     void setTier(int t);
+    void setAudioSource(live::Audio::Source s);
     void bindSource(const std::string& param);                 // open Live for param
     void setAudioBind(const std::string& param, AudioSignal sig, float reach, float smooth, int shape);
     void setMotionBind(const std::string& param, const MotionBinding& mb);
@@ -113,7 +114,7 @@ public:
     void runSelfTest(const std::string& which);
 
 private:
-    Framebuffer m_scene; ShaderProgram m_blit; GLuint m_vao = 0;
+    Framebuffer m_scene; ShaderProgram m_blit; GLuint m_vao = 0, m_fftTex = 0;
     SDL_GLContext m_gl = nullptr;
     void updateBindings(float dt);
     void renderScene();

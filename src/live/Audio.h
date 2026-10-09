@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include "sources/AudioFeatures.h"
+#include "live/SystemTap.h"
 
 namespace palette::live {
 
@@ -16,7 +17,13 @@ namespace palette::live {
 class Audio {
 public:
     static constexpr int kFFT = 1024;
-    bool start(int deviceIndex = -1);
+    enum class Source { System, Microphone };
+    // System = what the computer plays (macOS tap / Windows loopback); falls
+    // back to the microphone when that is unavailable. deviceIndex picks a mic.
+    bool start(Source src = Source::System, int deviceIndex = -1);
+    Source source() const { return m_source; }
+    const std::string& sourceName() const { return m_sourceName; }   // what we actually listen to
+    bool startSynthetic();   // no device; feed onCapture() yourself (tests)
     void stop();
     bool running() const { return m_running; }
     const std::string& error() const { return m_error; }
@@ -34,13 +41,16 @@ public:
     float midHit() const { return m_midHit; }
     float highHit() const { return m_highHit; }
     float bpm() const { return m_bpm; }
+    float inputPeak() const { return m_peak; }  // |sample| peak of the last capture chunk (0 = device delivers silence)
+    float gain() const { return m_agc; }
     const AudioFeatures& features() const { return m_features; }
     // Last 128 level samples for the Live waveform.
     const std::array<float, 128>& history() const { return m_history; }
     const std::vector<float>& spectrum() const { return m_spectrum; } // kFFT/2 magnitudes
+    const std::array<unsigned char, 128>& spectrum128() const { return m_spec128; } // gain-normalised, for the audioFFT texture
 
     // Device list for the Source/Live sheets.
-    static std::vector<std::string> devices();
+    static std::vector<std::string> devices();   // names; default device first marked with '*'
 
     // miniaudio callback target
     void onCapture(const float* frames, unsigned count, unsigned channels);
@@ -51,6 +61,9 @@ private:
     std::string m_error;
     void* m_device = nullptr; // ma_device*
     void* m_context = nullptr;
+    SystemTap m_tap; Source m_source = Source::System; std::string m_sourceName;
+    std::array<unsigned char, 128> m_spec128{};
+    float m_peakEnv = 0.0f; float m_sampleRate = 48000.0f;
     std::mutex m_mx;
     std::vector<float> m_ring; size_t m_ringPos = 0;
     std::vector<float> m_window, m_re, m_im, m_spectrum, m_prevSpec;
@@ -60,7 +73,7 @@ private:
     float m_bassPres = 0, m_midPres = 0, m_highPres = 0, m_levelPres = 0;
     float m_bassTime = 0, m_midTime = 0, m_highTime = 0, m_time = 0;
     float m_fluxAvg = 0, m_sinceBeat = 0, m_bpm = 120, m_beatPhase = 0;
-    float m_agc = 1.0f;
+    float m_agc = 1.0f; float m_peak = 0.0f;
     AudioFeatures m_features;
     std::array<float, 128> m_history{};
     int m_histPos = 0;

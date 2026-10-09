@@ -161,6 +161,11 @@ void App::setAudioBind(const std::string& param, AudioSignal sig, float reach, f
     easel.pushAudioBind(param, signalName(sig), reach, smooth);
 }
 
+void App::setAudioSource(live::Audio::Source s) {
+    audio.start(s);
+    showToast(audio.running() ? "Listening to " + audio.sourceName() : audio.error());
+}
+
 void App::setMotionBind(const std::string& param, const MotionBinding& mb) {
     if (!shader) return;
     shader->audioBindings().erase(param);
@@ -179,7 +184,16 @@ void App::unbind(const std::string& param) {
 
 void App::updateBindings(float dt) {
     if (!shader) return;
-    const auto& f = audio.features();
+    if (!m_fftTex) {
+        glGenTextures(1, &m_fftTex); glBindTexture(GL_TEXTURE_2D, m_fftTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, 128, 1, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    glBindTexture(GL_TEXTURE_2D, m_fftTex);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 128, 1, GL_RED, GL_UNSIGNED_BYTE, audio.spectrum128().data());
+    glBindTexture(GL_TEXTURE_2D, 0);
+    AudioFeatures f = audio.features(); f.fftTex = m_fftTex;
     shader->setAudioFeatures(f);
     shader->applyAudioBindings(audio.level(), audio.bass(), audio.mid(), audio.high(), audio.beat(), dt, nullptr);
     for (auto& [name, m] : motion) {
@@ -362,6 +376,49 @@ void App::render() {
 namespace palette {
 void App::runSelfTest(const std::string& which) {
     if (!shader) { std::fprintf(stderr, "TEST %s: no shader loaded\n", which.c_str()); return; }
+    if (which == "audio") {
+        // 1. DSP on a synthetic 120 BPM loop (kick + hat + 1 kHz tone), no device involved.
+        live::Audio syn; syn.startSynthetic();
+        std::vector<float> buf(800); double t = 0; int beats = 0; float mxL = 0, mxB = 0, mxM = 0, mxH = 0;
+        for (int fr = 0; fr < 60 * 8; ++fr) {
+            for (auto& smp : buf) {
+                double tb = std::fmod(t, 0.5);
+                float kick = (float)(std::exp(-tb * 18.0) * std::sin(6.2831853 * 55.0 * tb));
+                float hat = std::fmod(t, 0.25) < 0.03 ? 0.25f * ((std::rand() % 2000) / 1000.0f - 1.0f) : 0.0f;
+                float tone = 0.12f * (float)std::sin(6.2831853 * 1000.0 * t);
+                smp = 0.7f * kick + hat + tone; t += 1.0 / 48000.0;
+            }
+            syn.onCapture(buf.data(), (unsigned)buf.size(), 1);
+            syn.update(1.0f / 60.0f);
+            if (fr > 60) { mxL = std::max(mxL, syn.level()); mxB = std::max(mxB, syn.bass()); mxM = std::max(mxM, syn.mid()); mxH = std::max(mxH, syn.high()); if (syn.beat() > 0.9f) ++beats; }
+        }
+        std::fprintf(stderr, "TEST audio synthetic: level=%.2f bass=%.2f mid=%.2f high=%.2f beats=%d (expect ~14) bpm=%.0f (expect 120)\n", mxL, mxB, mxM, mxH, beats, syn.bpm());
+        // 2. The real input device, 7 s. Play something through the speakers while this runs.
+        auto devs = live::Audio::devices();
+        std::string dl; for (auto& d : devs) dl += d + " | ";
+        std::fprintf(stderr, "TEST audio input: running=%d source='%s' error='%s' devices: %s\n", audio.running(), audio.sourceName().c_str(), audio.error().c_str(), dl.c_str());
+        double t0 = clockSeconds(), tl = t0; float pk = 0; mxL = mxB = mxM = mxH = 0; beats = 0;
+        while (clockSeconds() - t0 < 7.0) {
+            SDL_Delay(16); audio.update(1.0f / 60.0f);
+            pk = std::max(pk, audio.inputPeak()); mxL = std::max(mxL, audio.level()); mxB = std::max(mxB, audio.bass()); mxM = std::max(mxM, audio.mid()); mxH = std::max(mxH, audio.high());
+            if (audio.beat() > 0.9f) ++beats;
+            if (clockSeconds() - tl >= 1.0) { tl = clockSeconds(); std::fprintf(stderr, "  t=%.0fs peak=%.3f gain=%.1f level=%.2f bass=%.2f mid=%.2f high=%.2f beats=%d bpm=%.0f\n", tl - t0, audio.inputPeak(), audio.gain(), audio.level(), audio.bass(), audio.mid(), audio.high(), beats, audio.bpm()); }
+        }
+        std::fprintf(stderr, "TEST audio mic: peak=%.3f (0 means the device delivers silence) level=%.2f bass=%.2f mid=%.2f high=%.2f beats=%d\n", pk, mxL, mxB, mxM, mxH, beats);
+        // 3. A live binding on the first float control, 6 s: the value must move.
+        std::string pname; float plo = 0, phi = 1;
+        for (auto& in : shader->inputs()) if (in.type == "float" && in.group != "Motion") { pname = in.name; plo = in.minVal; phi = in.maxVal; break; }
+        if (pname.empty()) { std::fprintf(stderr, "TEST audio bind: no float control\n"); return; }
+        setAudioBind(pname, AudioSignal::Bass, 1.0f, 0.6f, 3);
+        float vmin = 1e9f, vmax = -1e9f; t0 = clockSeconds();
+        while (clockSeconds() - t0 < 6.0) {
+            SDL_Delay(16); audio.update(1.0f / 60.0f); updateBindings(1.0f / 60.0f);
+            if (clockSeconds() - t0 < 3.0) continue;
+            for (auto& in : shader->inputs()) if (in.name == pname && std::holds_alternative<float>(in.value)) { float v = std::get<float>(in.value); vmin = std::min(vmin, v); vmax = std::max(vmax, v); }
+        }
+        std::fprintf(stderr, "TEST audio bind: %s range [%.2f..%.2f] moved %.3f..%.3f (swing %.1f%% of range)\n", pname.c_str(), plo, phi, vmin, vmax, 100.0f * (vmax - vmin) / std::max(1e-6f, phi - plo));
+        return;
+    }
     if (which == "makecontrol") {
         size_t hb = codeBuffer.find("*/");
         std::regex num(R"(\b(\d+\.\d+)\b)");

@@ -1,11 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 project(Palette VERSION 0.1.0 LANGUAGES C CXX)
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(APPLE)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "" FORCE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.2" CACHE STRING "" FORCE)
 endif()
 
 # Xcode-license shim: /usr/bin/python3 may be blocked, glad's generator needs Python.
@@ -20,6 +23,10 @@ include(cmake/Deps.cmake)
 file(GLOB_RECURSE PALETTE_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_SOURCE_DIR}/src/*.cpp
     ${CMAKE_SOURCE_DIR}/src/*.h)
+if(APPLE)
+    file(GLOB_RECURSE PALETTE_OBJC_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/*.mm)
+    list(APPEND PALETTE_SOURCES ${PALETTE_OBJC_SOURCES})
+endif()
 
 add_executable(palette ${PALETTE_SOURCES})
 target_include_directories(palette PRIVATE
@@ -33,7 +40,7 @@ target_compile_definitions(palette PRIVATE
 
 if(APPLE)
     find_library(OPENGL_FRAMEWORK OpenGL REQUIRED)
-    target_link_libraries(palette PRIVATE ${OPENGL_FRAMEWORK})
+    target_link_libraries(palette PRIVATE ${OPENGL_FRAMEWORK} "-framework CoreAudio" "-framework AudioToolbox" "-framework Foundation")
     # Easel's codesign-for-TCC trick: a stable identity keeps camera/mic grants across rebuilds.
     add_custom_command(TARGET palette POST_BUILD
         COMMAND sh -c "codesign --force --sign \"${PALETTE_SIGN_IDENTITY}\" \"$<TARGET_FILE:palette>\" 2>/dev/null || codesign --force --sign - \"$<TARGET_FILE:palette>\""
