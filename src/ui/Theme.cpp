@@ -21,7 +21,7 @@ static ImFont* loadFirst(const std::vector<const char*>& paths, float px) {
 
 void apply(float dpi) {
     ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard; // pointer and touch first; no nav focus stealing on new sheets
 
     // Easel rasterises at 2x and scales back; same here so text is crisp on Retina.
     const float ui = 15.0f, mono = 13.0f; (void)dpi; // ImGui 1.92 rasterises per framebuffer scale

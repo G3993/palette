@@ -25,7 +25,7 @@ constexpr ImGuiWindowFlags kBarFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindow
     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoBackground;
 constexpr ImGuiWindowFlags kSheetFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar;
+    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
 
 // Apply style + load fonts (system SF / Segoe / DejaVu, mono companion).
 void apply(float dpiScale);

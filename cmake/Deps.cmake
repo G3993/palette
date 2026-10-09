@@ -26,7 +26,17 @@ FetchContent_Declare(json
     GIT_TAG        v3.11.3
     GIT_SHALLOW    TRUE)
 
+FetchContent_Declare(miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG        0.11.22
+    GIT_SHALLOW    TRUE)
+
 FetchContent_MakeAvailable(SDL3 glm stb json)
+# miniaudio is header-only for us; do not build its extras.
+FetchContent_GetProperties(miniaudio)
+if(NOT miniaudio_POPULATED)
+    FetchContent_Populate(miniaudio)
+endif()
 
 # GLAD — GL 3.3 core loader (same profile Easel uses, so the lifted ISF runtime matches).
 FetchContent_Declare(glad

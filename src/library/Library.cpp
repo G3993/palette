@@ -71,6 +71,7 @@ void Library::refresh() {
     // Files on disk with no manifest entry still show (the SDK does the same).
     for (auto& d : fs::directory_iterator(m_root)) {
         if (!d.is_regular_file() || d.path().extension() != ".fs") continue;
+        if (d.path().filename().string().rfind("_", 0) == 0) continue; // Palette live files
         std::string file = d.path().filename().string();
         if (seen.count(file)) continue;
         LibraryEntry le;

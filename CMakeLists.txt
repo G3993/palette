@@ -24,7 +24,8 @@ file(GLOB_RECURSE PALETTE_SOURCES CONFIGURE_DEPENDS
 add_executable(palette ${PALETTE_SOURCES})
 target_include_directories(palette PRIVATE
     ${CMAKE_SOURCE_DIR}/src
-    ${stb_SOURCE_DIR})
+    ${stb_SOURCE_DIR}
+    ${miniaudio_SOURCE_DIR})
 target_link_libraries(palette PRIVATE imgui glad glm::glm nlohmann_json::nlohmann_json SDL3::SDL3)
 target_compile_definitions(palette PRIVATE
     PALETTE_VERSION="${PROJECT_VERSION}"
