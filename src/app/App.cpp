@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -91,7 +92,8 @@ bool App::loadShader(const std::string& path, const std::string& title, int id) 
     } catch (...) {}
     if (passNames.empty()) passNames.push_back("output");
     codePass = (int)passNames.size() - 1;
-    if (!sourcePath.empty()) shader->bindImageFileInput("inputImage", sourcePath);
+    for (auto& name : imageInputs()) { auto it = imagePaths.find(name); if (it != imagePaths.end()) shader->bindImageFileInput(name, it->second); }
+    { auto imgs = imageInputs(); sourceLabel = (!imgs.empty() && imagePaths.count(imgs[0])) ? fs::path(imagePaths[imgs[0]]).filename().string() : "None"; }
     library.touch(path);
     if (easel.connected()) easel.pushCode(codeBuffer);
     std::snprintf(pubName, sizeof pubName, "%s v2", title.c_str());
@@ -105,12 +107,6 @@ void App::recompile() {
     compileMs = (clockSeconds() - t0) * 1000.0;
     compileOk = ok; compileStatus = ok ? "compiled" : shader->lastError();
     if (ok) { codeDirty = false; if (easel.connected()) easel.pushCode(codeBuffer); }
-}
-
-void App::bindImage(const std::string& path) {
-    if (!shader) return;
-    if (shader->bindImageFileInput("inputImage", path)) { sourcePath = path; sourceLabel = fs::path(path).filename().string(); showToast("Source · " + sourceLabel); }
-    else showToast("Could not read that image");
 }
 
 void App::setTier(int t) { tier = std::clamp(t, 0, 3); }
@@ -207,32 +203,6 @@ void App::paramChanged(const ISFInput& in) {
     else if (std::holds_alternative<glm::vec4>(in.value)) { auto c = std::get<glm::vec4>(in.value); easel.pushColor(in.name, c.r, c.g, c.b, c.a); }
 }
 
-// ---------------------------------------------------------------- make control
-bool App::makeControl(const std::string& name, float lo, float hi, float def, int selA, int selB) {
-    if (!shader || selA == selB) return false;
-    if (selA > selB) std::swap(selA, selB);
-    if (selB > (int)codeBuffer.size()) return false;
-    size_t ha = codeBuffer.find("/*"), hb = codeBuffer.find("*/");
-    if (ha == std::string::npos || hb == std::string::npos || (size_t)selA < hb) return false;
-    ojson header;
-    try { header = ojson::parse(codeBuffer.substr(ha + 2, hb - ha - 2)); } catch (...) { compileStatus = "header is not valid JSON"; compileOk = false; return false; }
-    if (!header.contains("INPUTS") || !header["INPUTS"].is_array()) header["INPUTS"] = ojson::array();
-    for (auto& i : header["INPUTS"]) if (i.value("NAME", "") == name) { compileStatus = "a control named " + name + " exists"; compileOk = false; return false; }
-    std::string label = name; if (!label.empty()) label[0] = (char)std::toupper(label[0]);
-    for (size_t i = 1; i < label.size(); ++i) if (std::isupper((unsigned char)label[i]) && std::islower((unsigned char)label[i - 1])) { label.insert(i, " "); ++i; }
-    ojson input = {{"NAME", name}, {"LABEL", label}, {"TYPE", "float"}, {"GROUP", "Look"}, {"DEFAULT", def}, {"MIN", lo}, {"MAX", hi}};
-    header["INPUTS"].push_back(input);
-    std::string newHeader = "/*" + header.dump(2) + "*/";
-    std::string body = codeBuffer.substr(hb + 2);
-    int bodyA = selA - (int)(hb + 2), bodyB = selB - (int)(hb + 2);
-    body.replace(bodyA, bodyB - bodyA, name);
-    codeBuffer = newHeader + body;
-    codeDirty = true;
-    recompile();
-    if (compileOk) showToast(label + " is now a control");
-    return compileOk;
-}
-
 // ---------------------------------------------------------------- publish / export
 bool App::publish() {
     if (!shader) return false;
@@ -286,6 +256,7 @@ std::vector<std::string> App::groups() const {
         if (gr == "Motion") continue;
         if (std::find(g.begin(), g.end(), gr) == g.end()) g.push_back(gr);
     }
+    if (!imageInputs().empty()) g.push_back("Input");
     g.push_back("Motion");
     g.push_back("All");
     return g;
@@ -403,6 +374,35 @@ void App::runSelfTest(const std::string& which) {
         bool has = false; for (auto& in : shader->inputs()) if (in.name == "testAmount") has = true;
         std::fprintf(stderr, "TEST makecontrol: literal=%s ok=%d compileOk=%d inputs %zu->%zu hasControl=%d status=%s\n", m.str(1).c_str(), ok, compileOk, before, shader->inputs().size(), has, compileStatus.c_str());
         std::fprintf(stderr, "TEST makecontrol: body now contains 'testAmount' at %d: %s\n", (int)codeBuffer.find("testAmount", hb), codeBuffer.find("testAmount", hb) != std::string::npos ? "yes" : "no");
+    } else if (which == "still") {
+        for (int i = 0; i < 5; ++i) shader->update();
+        bool ok = Thumbs::renderPng(*shader, "/tmp/palette_still_test.png", 640, 400);
+        std::fprintf(stderr, "TEST still: ok=%d passes=%zu tex=%u size=%dx%d\n", ok, passNames.size(), shader->textureId(), shader->width(), shader->height());
+    } else if (which == "texture") {
+        std::string img = std::getenv("PALETTE_TEST_IMAGE") ? std::getenv("PALETTE_TEST_IMAGE") : homeDir() + "/ShaderClaw3/carbon_fiber.png";
+        size_t before = shader->inputs().size();
+        imageTarget.clear();
+        bindImage(img);
+        bool hasImg = false, hasMix = false; for (auto& in : shader->inputs()) { if (in.name == "inputImage") hasImg = true; if (in.name == "textureMix") hasMix = true; }
+        shader->setFloat("textureMix", 1.0f); shader->setFloat("textureMode", 0.0f); // Show mode: the still should be the flower
+        Thumbs::renderPng(*shader, "/tmp/palette_texture_test.png", 640, 400);
+        { // GL-level diagnostics
+            shader->update();
+            GLint prog = 0; glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
+            GLint loc = glGetUniformLocation(prog, "inputImage"), locF = glGetUniformLocation(prog, "_flip_inputImage"), locS = glGetUniformLocation(prog, "IMG_SIZE_inputImage");
+            GLint unit = -1; if (loc >= 0) glGetUniformiv(prog, loc, &unit);
+            GLint bound = 0; glActiveTexture(GL_TEXTURE0 + (unit >= 0 ? unit : 8)); glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+            GLint w = 0, h = 0; if (bound) { glBindTexture(GL_TEXTURE_2D, bound); glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w); glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h); }
+            unsigned char px[16] = {0}; if (bound && w > 0) { std::vector<unsigned char> buf((size_t)w * h * 4); glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, buf.data()); std::memcpy(px, buf.data() + ((size_t)(h / 2) * w + w / 2) * 4, 4); }
+            std::fprintf(stderr, "TEST texture GL: prog=%d loc=%d flipLoc=%d sizeLoc=%d unit=%d boundTex=%d %dx%d centerPx=%d,%d,%d,%d err=%d\n", prog, loc, locF, locS, unit, bound, w, h, px[0], px[1], px[2], px[3], glGetError());
+        }
+        std::fprintf(stderr, "TEST texture: compileOk=%d inputs %zu->%zu hasInputImage=%d hasMix=%d bound=%d status=%s toast=%s\n", compileOk, before, shader->inputs().size(), hasImg, hasMix, imagePaths.count("inputImage") > 0, compileStatus.c_str(), toast.c_str());
+    } else if (which == "addcontrol") {
+        size_t before = shader->inputs().size();
+        bool ok = addControl("glow", "float", 0, 2, 1, "Look");
+        bool ok2 = addControl("tint", "color", 0, 0, 0, "Look");
+        bool ok3 = addControl("flip", "bool", 0, 0, 1, "Look");
+        std::fprintf(stderr, "TEST addcontrol: float=%d color=%d bool=%d inputs %zu->%zu compileOk=%d status=%s\n", ok, ok2, ok3, before, shader->inputs().size(), compileOk, compileStatus.c_str());
     } else if (which == "publish") {
         std::snprintf(pubName, sizeof pubName, "Palette Test Shader");
         pubPack = 0; pubShowOnEasel = false;

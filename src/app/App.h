@@ -6,6 +6,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <functional>
+#include <nlohmann/json.hpp>
 
 #include "sources/ShaderSource.h"
 #include "render/Framebuffer.h"
@@ -59,6 +61,10 @@ public:
     std::string codeBuffer; bool codeDirty = false;
     bool compileOk = true; std::string compileStatus = "no shader"; double compileMs = 0;
     std::string sourceLabel = "None", sourcePath;
+    std::map<std::string, std::string> imagePaths;   // image input name -> file (kept across shaders)
+    std::string imageTarget;                          // which image input the next picked file binds to
+    // add-control form
+    bool addControlOpen = false; char acName[48] = ""; int acType = 0; float acLo = 0, acHi = 1, acDef = 0.5f; char acGroup[32] = "Look";
     std::map<std::string, MotionBinding> motion;
 
     Sheet sheet = Sheet::None, closing = Sheet::None;
@@ -99,6 +105,10 @@ public:
     bool exportFs();
     void showToast(const std::string& t) { toast = t; toastT = 2.6f; }
     void bindImage(const std::string& path);
+    std::vector<std::string> imageInputs() const;            // names of image INPUTS
+    bool rewriteHeader(const std::function<bool(nlohmann::ordered_json&)>& edit, const std::string& bodyEdit = ""); // header JSON edit + optional new body, then recompile
+    bool addControl(const std::string& name, const std::string& type, float lo, float hi, float def, const std::string& group);
+    bool addTextureSupport();                                 // inputImage + Texture group, blended into the last pass
     std::vector<std::string> groups() const;
     void runSelfTest(const std::string& which);
 

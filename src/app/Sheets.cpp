@@ -213,7 +213,7 @@ void App::sheetControls() {
     const std::string& cur = g[controlsGroup];
     auto& inputs = shader->inputs();
     int shown = 0, total = 0;
-    for (auto& in : inputs) if (in.type != "image") { ++total; std::string gr = in.group.empty() ? "General" : in.group; if (cur == "All" || gr == cur) ++shown; }
+    for (auto& in : inputs) { ++total; std::string gr = in.type == "image" ? "Input" : (in.group.empty() ? "General" : in.group); if (cur == "All" || gr == cur) ++shown; }
     char sub[64]; std::snprintf(sub, sizeof sub, "%s · %d of %d", cur.c_str(), shown, total);
     if (sheetHeader("Controls", sub)) closeSheet();
     if (g.size() > 1) {
@@ -229,12 +229,22 @@ void App::sheetControls() {
     ImGui::BeginChild("##rows", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
     auto& ab = shader->audioBindings();
     for (auto& in : inputs) {
-        if (in.type == "image") continue;
-        std::string gr = in.group.empty() ? "General" : in.group;
+        std::string gr = in.type == "image" ? "Input" : (in.group.empty() ? "General" : in.group);
         if (cur != "All" && gr != cur) continue;
         ImGui::PushID(in.name.c_str());
         const char* label = in.label.empty() ? in.name.c_str() : in.label.c_str();
-        if (in.type == "float" || in.type == "long") {
+        if (in.type == "image") {
+            auto it = imagePaths.find(in.name);
+            std::string file = it != imagePaths.end() ? fs::path(it->second).filename().string() : "none";
+            ImVec2 p = ImGui::GetCursorScreenPos(); float w = ImGui::GetContentRegionAvail().x;
+            auto* dl = ImGui::GetWindowDrawList();
+            ImGui::PushFont(F(), 15.0f); dl->AddText(p, kWhite, label); ImGui::PopFont();
+            ImGui::PushFont(F(), 13.0f); dl->AddText(ImVec2(p.x, p.y + 22), kW40, file.c_str()); ImGui::PopFont();
+            ImGui::SetCursorScreenPos(ImVec2(p.x + w - 110, p.y + 2));
+            if (bigButton("##pick", "Choose…", false, 40, 110)) { imageTarget = in.name; openFileDialog(*this, true); }
+            ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + 56));
+            ImGui::Dummy(ImVec2(w, 1));
+        } else if (in.type == "float" || in.type == "long") {
             float v = std::get<float>(in.value);
             SliderStyle st;
             char driven[48] = "";
@@ -315,7 +325,42 @@ void App::sheetControls() {
         }
         ImGui::PopID();
     }
-    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::Dummy(ImVec2(0, 10));
+    if (bigButton("##addctl", "Add a control", false, 44)) { std::snprintf(acName, sizeof acName, "amount"); acType = 0; acLo = 0; acHi = 1; acDef = 0.5f; std::snprintf(acGroup, sizeof acGroup, "%s", (cur == "All" || cur == "Motion" || cur == "Input") ? "Look" : cur.c_str()); ImGui::OpenPopup("##addctlpop"); }
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 18.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18, 16));
+    ImGui::SetNextWindowSize(ImVec2(320, 0));
+    if (ImGui::BeginPopup("##addctlpop")) {
+        ImGui::PushFont(F(), 17.0f); ImGui::TextUnformatted("Add a control"); ImGui::PopFont();
+        ImGui::Dummy(ImVec2(0, 6));
+        static const char* types[] = {"float", "bool", "color", "point2D", "long", "image"};
+        int nt = chips("##actype", {"Number", "Toggle", "Color", "Point", "Steps", "Image"}, acType);
+        if (nt >= 0) acType = nt;
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::PushFont(F(), 14.0f);
+        ImGui::SetNextItemWidth(-1); ImGui::InputTextWithHint("##acn", "name, e.g. glow", acName, sizeof acName);
+        if (acType == 0 || acType == 4) {
+            ImGui::Dummy(ImVec2(0, 4));
+            ImGui::PushFont(theme::monoFont(), 13.0f);
+            ImGui::SetNextItemWidth(84); ImGui::InputFloat("##aclo", &acLo, 0, 0, "%.3g"); ImGui::SameLine(0, 6); ImGui::TextUnformatted("to"); ImGui::SameLine(0, 6);
+            ImGui::SetNextItemWidth(84); ImGui::InputFloat("##achi", &acHi, 0, 0, "%.3g"); ImGui::SameLine(0, 10); ImGui::TextUnformatted("start"); ImGui::SameLine(0, 6);
+            ImGui::SetNextItemWidth(70); ImGui::InputFloat("##acdef", &acDef, 0, 0, "%.3g");
+            ImGui::PopFont();
+        }
+        if (acType != 5) { ImGui::Dummy(ImVec2(0, 4)); ImGui::SetNextItemWidth(-1); ImGui::InputTextWithHint("##acg", "group", acGroup, sizeof acGroup); }
+        ImGui::Dummy(ImVec2(0, 10));
+        float bw = (ImGui::GetContentRegionAvail().x - 10) / 2;
+        if (bigButton("##acc", "Cancel", false, 44, bw)) ImGui::CloseCurrentPopup();
+        ImGui::SameLine(0, 10);
+        if (bigButton("##acok", "Add", true, 44, bw)) {
+            std::string nm = acName; for (auto& ch : nm) if (!std::isalnum((unsigned char)ch)) ch = '_';
+            if (!nm.empty() && !std::isdigit((unsigned char)nm[0]) && addControl(nm, types[acType], acLo, acHi, acDef, acGroup)) ImGui::CloseCurrentPopup();
+        }
+        ImGui::PopFont();
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar(2);
+    ImGui::Dummy(ImVec2(0, 8));
     caption("Tap a name to drive it live · double-tap a knob to reset · tap a value to type · Shift for fine", kW40);
     ImGui::EndChild();
 }
@@ -480,17 +525,36 @@ void App::sheetShader() {
 
 // ------------------------------------------------------------- source
 void App::sheetSource() {
-    if (sheetHeader("Source", sourceLabel.c_str())) closeSheet();
-    if (bigButton("##img", "Choose an image…", true)) openFileDialog(*this, true);
+    auto imgs = imageInputs();
+    if (sheetHeader("Source", imgs.empty() ? "This shader has no texture yet" : sourceLabel.c_str())) closeSheet();
+    if (!shader) { caption("Pick a shader first.", kW60); return; }
+    if (imgs.empty()) {
+        if (bigButton("##addtex", "Add a texture to this shader", true)) { if (addTextureSupport()) { imageTarget = "inputImage"; openFileDialog(*this, true); } }
+        ImGui::Dummy(ImVec2(0, 10));
+        caption("Palette adds an image input and a Texture group (Mix, Mode, Scale) blended into the final pass. The shader keeps working exactly as before until you raise the mix.", kW40);
+    } else {
+        for (auto& name : imgs) {
+            ImGui::PushID(name.c_str());
+            auto it = imagePaths.find(name);
+            std::string file = it != imagePaths.end() ? fs::path(it->second).filename().string() : "none";
+            ImVec2 p = ImGui::GetCursorScreenPos(); float w = ImGui::GetContentRegionAvail().x;
+            auto* dl = ImGui::GetWindowDrawList();
+            ImGui::PushFont(F(), 15.0f); dl->AddText(p, kWhite, name.c_str()); ImGui::PopFont();
+            ImGui::PushFont(F(), 13.0f); dl->AddText(ImVec2(p.x, p.y + 22), kW40, file.c_str()); ImGui::PopFont();
+            ImGui::SetCursorScreenPos(ImVec2(p.x + w - 110, p.y + 2));
+            if (bigButton("##pick", "Choose…", true, 40, 110)) { imageTarget = name; openFileDialog(*this, true); }
+            ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + 52));
+            ImGui::Dummy(ImVec2(w, 1));
+            ImGui::PopID();
+        }
+        ImGui::Dummy(ImVec2(0, 6));
+        if (bigButton("##none", "Clear images", false, 44)) { for (auto& n : imgs) { shader->unbindImageInput(n); imagePaths.erase(n); } sourcePath.clear(); sourceLabel = "None"; }
+        ImGui::Dummy(ImVec2(0, 10));
+        caption("Drop an image anywhere on the window to set the first one.", kW40);
+    }
+    ImGui::Dummy(ImVec2(0, 10));
+    if (bigButton("##fs", "Open a shader file…", false, 44)) openFileDialog(*this, false);
     ImGui::Dummy(ImVec2(0, 8));
-    if (bigButton("##fs", "Open a shader file…", false)) openFileDialog(*this, false);
-    ImGui::Dummy(ImVec2(0, 8));
-    if (bigButton("##none", "No source", false)) { if (shader) shader->unbindImageInput("inputImage"); sourcePath.clear(); sourceLabel = "None"; }
-    ImGui::Dummy(ImVec2(0, 12));
-    bool hasImageInput = false;
-    if (shader) for (auto& in : shader->inputs()) if (in.type == "image") hasImageInput = true;
-    caption(hasImageInput ? "This shader takes an image. Drop one anywhere on the window." : "This shader generates its own picture. An image here is kept for the next effect you open.", kW40);
-    ImGui::Dummy(ImVec2(0, 6));
     caption("Camera and video arrive with the next cut.", kW30);
 }
 
